@@ -1,6 +1,6 @@
 # Analysis of Existing Multi-Agent Patterns (ceiling-designer & purrfect-blocks)
 
-Before designing new examples, this documents what Manuel already built and validated in two prior projects. Both live in `neo/apps/`. Read this before designing new agent-smith examples — don't reinvent what already works.
+Before designing new examples, this documents what Manuel already built and validated in prior projects (Patterns 1-3, all in `neo/apps/` or `neo/chats/`), plus one **external, third-party** system read from source as independent corroboration (the sidekick case study). Read this before designing new agent-smith examples — don't reinvent what already works.
 
 ## Pattern 1: Sequential Pipeline with Human Gate (`ceiling-designer`)
 
@@ -62,9 +62,28 @@ research-agent → response-agent
 
 **Why this matters for agent-smith**: it's the cleanest illustration that the generator/verifier split isn't specific to code — the same "one agent produces, a second independently checks against a fixed rubric before anything is called done" structure applies to research synthesis too. It's also the cheapest possible multi-agent system (2 agents, no loop, no orchestrator) — useful as a minimal baseline example against the heavier 5-agent and orchestrator patterns.
 
+## External Case Study: `sidedotdev/sidekick` (third-party corroboration)
+
+Patterns 1-3 are all systems Manuel built himself, so they can't independently confirm the thesis — they *are* the thesis. [`sidedotdev/sidekick`](https://github.com/sidedotdev/sidekick) is a production-grade open-source coding agent (Go + Temporal), built by an unrelated team, read directly from source. It matters here precisely because it's **not** Manuel's design: an independent system converging on the same structure is stronger evidence than two in-house examples. Full source-level analysis with line references lives in [`case-study-sidekick.md`](case-study-sidekick.md); the summary for pattern-comparison purposes:
+
+**Structure**: a strictly sequential pipeline (`PlannedDevWorkflow`), coordinated by a *deterministic Temporal supervisor* — not an LLM orchestrator.
+
+```
+DevAgentManagerWorkflow (durable supervisor, no LLM — routes by FlowType in code)
+   └─▶ BuildDevRequirements → BuildDevPlan → FollowDevPlan(per step) → EnsureTestsPass → AutoFormat → reviewAndResolve
+        (PlanningKey model)   (PlanningKey)   (CodingKey model list)   (tool-grounded)              (JudgingKey model verdict)
+```
+
+- **The "agent" is a single tool-calling loop** (`LlmLoop`, `maxIterations: 17`, human check-in every N iterations) — **no sub-agent fan-out anywhere in the core dev loop.** A serious production coding agent chose single-loop + verification over agent-swarming.
+- **The "manager" is not an LLM.** `DevAgentManagerWorkflow` is a durable signal-router that dispatches child flows with `if FlowType == "basic_dev"` — coordination is *code*, not a prompt. This is the anti-hype orchestration model shipped (see [`hype-vs-evidence-disconnect.md`](hype-vs-evidence-disconnect.md) §3, §6).
+- **Model tiering by role is first-class config**: distinct model-config keys for `PlanningKey`, `CodingKey`, and `JudgingKey`. The coding role holds a *list* of models and rotates through them on repeated failure (reverting the working tree via `git checkout` between models) — a cost/resilience failover ladder, not quality-via-more-agents.
+- **The verifier is structurally distinct and rubric-shaped**: `CheckWorkMeetsCriteria` forces a `determine_criteria_fulfillment` tool call returning `CriteriaFulfillment{IsFulfilled, Analysis, FeedbackMessage}`, re-derived from git diffs — not the coder's self-report, and not free-form "does this look right." This is the exact `JudgingKey`-on-its-own-tier realization of the "cross-tier verification" idea flagged as the highest-leverage *unbuilt* item in the Open Questions below.
+
+**Why this matters for agent-smith**: sidekick independently implements all three levers the research says actually matter — tool-grounded gates (real test runs), a structurally distinct verifier on its own model tier, and hard-capped loops with human escalation as the termination condition — inside a sequential pipeline that correctly refuses to parallelize its dependency chain. It is a real-world existence proof that "agent count is a latency lever, not a quality lever." Two honest divergences from Manuel's patterns: (1) it runs on **Temporal durable execution** (crash-safety + bounded history + workflow-versioning discipline) rather than lightweight file-based handoffs — a distinct substrate worth its own row in the decision framework; (2) it uses a **single** judging pass escalating to a *human* on failure, never a second reviewer — which *agrees* with the research's "don't add a tie-breaking LLM" caution and leaves example 03's narrow grounded-voting pattern genuinely non-redundant.
+
 ## Open questions for agent-smith to answer via research
 
 - Is 5 the right bound for correction rounds, or should it be adaptive (e.g. stop early if the last 2 rounds show no delta)?
-- Both examples use single-model-family review (Claude reviewing Claude). Is cross-model review (e.g. a cheaper/different model as adversarial critic) meaningfully better at catching same-family blind spots?
+- Both examples use single-model-family review (Claude reviewing Claude). Is cross-model review (e.g. a cheaper/different model as adversarial critic) meaningfully better at catching same-family blind spots? *(Partially addressed by the sidekick case study: it separates the verifier onto its own `JudgingKey` model config, proving the mechanism is cheap to build — but leaves whether that model is actually stronger/different to operator config, so the asymmetry question itself is still open.)*
 - Neither example does explicit self-consistency/voting (N parallel generations + majority vote) — is that worth the cost for the highest-stakes steps (e.g. the Planner's architecture choice)?
 - Where exactly does the $8-10 vs $100 cost delta come from in practice — model tiering, shorter per-call context, or avoiding wasted full-regenerations from a single giant one-shot attempt that goes wrong?
